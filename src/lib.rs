@@ -42,6 +42,9 @@ use sp_std::{
 	collections::vec_deque::VecDeque,
 };
 use alt_serde::{Deserialize, Deserializer};
+use sp_runtime::offchain::Timestamp;
+
+const FAUCET_CHECK_INTERVAL: u64 = 60000;
 
 #[derive(Clone, Eq, PartialEq, Default, Encode, Decode, Hash, Debug)]
 //#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -255,7 +258,17 @@ impl fmt::Debug for GithubInfo {
 
 impl<T: Trait> Module<T> {
 	fn check_faucet_datas(){
+		let last_check_time = StorageValueRef::persistent(b"offchain-test::last_check_time");
+		let now = sp_io::offchain::timestamp().unix_millis();
+		if let Some(Some(last_check_time)) = last_check_time.get::<u64>() {
+			debug::info!("last_check_time: {:?}", last_check_time);
+			if now - last_check_time < FAUCET_CHECK_INTERVAL{
+				return;
+			}
+		}		
 
+		debug::info!("######## faucet executed");
+		last_check_time.set(&now);
 
 		// let g_info = match Self::fetch_data(){
 		// 	Ok(res)=>res,
