@@ -43,6 +43,7 @@ use sp_std::{
 };
 use alt_serde::{Deserialize, Deserializer};
 use sp_runtime::offchain::Timestamp;
+use chrono::{NaiveDateTime, Duration};
 
 const FAUCET_CHECK_INTERVAL: u64 = 60000;
 
@@ -70,7 +71,7 @@ decl_storage! {
 		// Learn more about declaring storage items:
 		// https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
 		Something get(fn something): Option<u32>;
-		NewestFaucetData get(fn newest_faucet_data): Option<FaucetData>;
+		LatestFaucetData get(fn latest_faucet_data): Option<FaucetData>;
 	}
 }
 
@@ -93,6 +94,9 @@ decl_error! {
 		StorageOverflow,
 		// Error returned when fetching github info
 		HttpFetchingError,
+		OffchainSignedTxError, // todo : need to change
+		NoLocalAcctForSigning, // todo : need to change
+
 	}
 }
 
@@ -108,19 +112,44 @@ decl_module! {
 		fn deposit_event() = default;
 
 		fn offchain_worker(block: T::BlockNumber) {
-			let value = match Something::get() {
-				None => 77,
-				Some(old) => old,
+			let value = match LatestFaucetData::get() {
+				None => None,
+				Some(old) => Some(old),
 			};
-			debug::info!("value is {}",value);
-
-			// match Self::fetch_data() {
-			//   Ok(res) => debug::info!("Result: {}", core::str::from_utf8(&res).unwrap()),
-			//   Err(e) => debug::error!("Error fetch_data: {}", e),
-			// };
+			debug::info!("value is {:#?}",value);
 			
-			Self::check_faucet_datas();
-		  }
+			Self::check_faucet_datas(value);
+		}
+
+		#[weight = 10000]
+		pub fn send_some_testnet_token(origin, faucet_data: FaucetData) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			// todo: check who
+			debug::info!("submit_number_signed: ({}, {:?})", faucet_data.id, who);
+			let latest_faucet_data = match LatestFaucetData::get(){
+				Some(data) => data,
+				None => {
+					// todo: transfer token
+					debug::info!("Need to transfer token.");
+					LatestFaucetData::put(faucet_data);
+					return Ok(());
+				},
+			};
+			if faucet_data.id != latest_faucet_data.id {
+				// todo: need to change error.
+				let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+				let latest_created_at_str = str::from_utf8(&latest_faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+				let created_at_for_param_data = NaiveDateTime::parse_from_str(param_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+				let created_at_for_latest_data = NaiveDateTime::parse_from_str(latest_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+				let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
+				if duration.num_seconds() >= 0 {
+					// todo: token transfer
+					LatestFaucetData::put(faucet_data);
+				}
+			}
+			Ok(())
+		}
+
 		/// An example dispatchable that takes a singles value as a parameter, writes the value to
 		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
 		#[weight = 10_000]
@@ -162,7 +191,6 @@ decl_module! {
 
 const HTTP_HEADER_USER_AGENT: &str = "realtakahashi";
 const HTTP_REMOTE_REQUEST: &str = "https://api.github.com/repos/realtakahashi/faucet_pallet/issues/2/comments";
-const HTTP_ONCHAIN_REQUEST: &str = "http://localhost:9933/";
 
 #[serde(crate = "alt_serde")]
 #[derive(Deserialize, Encode, Decode, Default)]
@@ -257,7 +285,7 @@ impl fmt::Debug for GithubInfo {
 }
 
 impl<T: Trait> Module<T> {
-	fn check_faucet_datas(){
+	fn check_faucet_datas(faucet_data:Option<FaucetData>){
 		let last_check_time = StorageValueRef::persistent(b"offchain-test::last_check_time");
 		let now = sp_io::offchain::timestamp().unix_millis();
 		if let Some(Some(last_check_time)) = last_check_time.get::<u64>() {
@@ -270,62 +298,28 @@ impl<T: Trait> Module<T> {
 		debug::info!("######## faucet executed");
 		last_check_time.set(&now);
 
-		// let g_info = match Self::fetch_data(){
-		// 	Ok(res)=>res,
-		// 	Err(e)=>{
-		// 		debug::error!("Error fetch_data: {}", e);
-		// 		return
-		// 	}
-		// };
-		// match Self::get_newest_data_from_onchain(){
-		// 	Ok(res)=>res,
-		// 	Err(e)=>{
-		// 		debug::error!("Error fetch_data: {}", e);
-		// 		return
-		// 	}
-		// };
-		// let target_g_info = match Self::check_fetch_data(g_info){
-		// 	Ok(res)=>res,
-		// 	Err(e)=>{
-		// 		debug::error!("Error check_data: {}", e);
-		// 		return
-		// 	}
-		// };
+		let g_info = match Self::fetch_data(){
+			Ok(res)=>res,
+			Err(e)=>{
+				debug::error!("Error fetch_data: {}", e);
+				return
+			}
+		};
+
+		let target_faucet_data = match Self::check_fetch_data(g_info){
+			Ok(res)=>res,
+			Err(e)=>{
+				debug::error!("Error check_data: {}", e);
+				return
+			}
+		};
+
+		Self::offchain_signed_tx(target_faucet_data);
 	}
 
-	// fn check_fetch_data(g_info Vec<GithubInfo>) -> Result<Vec<GithubInfo>, &'static str>{
+	fn check_fetch_data(g_info Vec<GithubInfo>) -> Result<FaucetData, &'static str>{
 		
-	// }
-
-	// fn get_newest_data_from_onchain() -> Result<&'static str, &'static str>{
-	//   let json_str: Vec<u8> = br#"{"id":1, "jsonrpc":"2.0", "method": "state_getStorage", "params": ["0x5c0d1176a568c1f92944340dbfed9e9c530ebca703c85910e7164cb7d1c9e47b"]}"#.to_vec();
-
-	//   let pending = http::Request::get(HTTP_ONCHAIN_REQUEST)
-	// 	.add_header("User-Agent", HTTP_HEADER_USER_AGENT)
-	// 	.add_header("Accept-Charset", "UTF-8")
-	// 	.add_header("Content-Type", "application/json")
-	// 	.body(json_str)
-	// 	.send()
-	// 	.map_err(|_| "Error in sending http GET request")?;
-  
-	//   // Waiting for the response
-	//   let response = pending.wait()
-	// 	.map_err(|_| "Error in waiting http response back")?;
-  
-	//   // Check if the HTTP response is okay
-	//   if response.code != 200 {
-	// 	debug::warn!("Unexpected status code: {}", response.code);
-	// 	return Err("Non-200 status code returned from http request");
-	//   }
- 
-	//   let resp_bytes = response.body().collect::<Vec<u8>>();
-
-	//   let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
-	//   // Print out our fetched JSON string
-	//   debug::info!("$$$$ response string $$$$");
-	//   debug::info!("{}", resp_str);
-	//   Ok(resp_str)
-	// }
+	}
 
 	fn fetch_data() -> Result<Vec<GithubInfo>, &'static str> {
 	  // Specifying the request
@@ -365,4 +359,35 @@ impl<T: Trait> Module<T> {
 	  // Collect the result in the form of bytes
 	  Ok(gh_info)
 	}
-  }
+
+	fn offchain_signed_tx(faucet_data: FaucetData) -> Result<(), Error<T>> {
+		// We retrieve a signer and check if it is valid.
+		//   Since this pallet only has one key in the keystore. We use `any_account()1 to
+		//   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
+		//   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.Signer.html
+		let signer = Signer::<T, T::AuthorityId>::any_account();
+
+		// `result` is in the type of `Option<(Account<T>, Result<(), ()>)>`. It is:
+		//   - `None`: no account is available for sending transaction
+		//   - `Some((account, Ok(())))`: transaction is successfully sent
+		//   - `Some((account, Err(())))`: error occured when sending the transaction
+		let result = signer.send_signed_transaction(|_acct|
+			// This is the on-chain function
+			Call::send_some_testnet_token(faucet_data)
+		);
+
+		// Display error if the signed tx fails.
+		if let Some((acc, res)) = result {
+			if res.is_err() {
+				debug::error!("failure: offchain_signed_tx: tx sent: {:?}", acc.id);
+				return Err(<Error<T>>::OffchainSignedTxError);
+			}
+			// Transaction is sent successfully
+			return Ok(());
+		}
+
+		// The case of `None`: no account is available for sending
+		debug::error!("No local account available");
+		Err(<Error<T>>::NoLocalAcctForSigning)
+	}
+}
