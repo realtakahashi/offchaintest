@@ -43,7 +43,13 @@ use sp_std::{
 };
 use alt_serde::{Deserialize, Deserializer};
 
-const HTTP_HEADER_USER_AGENT: &str = "realtakahashi";
+#[derive(Clone, Eq, PartialEq, Default, Encode, Decode, Hash, Debug)]
+//#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+pub struct FaucetData {
+    pub id: u64,
+	pub login: Vec<u8>,
+    pub created_at: Vec<u8>,
+}
 
 /// Configure the pallet by specifying the parameters and types on which it depends.
 pub trait Trait: frame_system::Trait {
@@ -61,6 +67,7 @@ decl_storage! {
 		// Learn more about declaring storage items:
 		// https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
 		Something get(fn something): Option<u32>;
+		NewestFaucetData get(fn newest_faucet_data): Option<FaucetData>;
 	}
 }
 
@@ -98,10 +105,18 @@ decl_module! {
 		fn deposit_event() = default;
 
 		fn offchain_worker(block: T::BlockNumber) {
-			match Self::fetch_data() {
-			  Ok(res) => debug::info!("Result: {}", core::str::from_utf8(&res).unwrap()),
-			  Err(e) => debug::error!("Error fetch_data: {}", e),
+			let value = match Something::get() {
+				None => 77,
+				Some(old) => old,
 			};
+			debug::info!("value is {}",value);
+
+			// match Self::fetch_data() {
+			//   Ok(res) => debug::info!("Result: {}", core::str::from_utf8(&res).unwrap()),
+			//   Err(e) => debug::error!("Error fetch_data: {}", e),
+			// };
+			
+			Self::check_faucet_datas();
 		  }
 		/// An example dispatchable that takes a singles value as a parameter, writes the value to
 		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
@@ -142,12 +157,16 @@ decl_module! {
 	}
 }
 
+const HTTP_HEADER_USER_AGENT: &str = "realtakahashi";
+const HTTP_REMOTE_REQUEST: &str = "https://api.github.com/repos/realtakahashi/faucet_pallet/issues/2/comments";
+const HTTP_ONCHAIN_REQUEST: &str = "http://localhost:9933/";
+
 #[serde(crate = "alt_serde")]
 #[derive(Deserialize, Encode, Decode, Default)]
 struct User{
 	#[serde(deserialize_with = "de_string_to_bytes")]
 	login: Vec<u8>,
-	id: u32,
+	id: u64,
 	#[serde(deserialize_with = "de_string_to_bytes")]
 	node_id: Vec<u8>,
 	#[serde(deserialize_with = "de_string_to_bytes")]
@@ -187,6 +206,7 @@ struct GithubInfo {
 	//Specify our own deserializing function to convert JSON string to vector of bytes
 	#[serde(deserialize_with = "de_string_to_bytes")]
 	url: Vec<u8>,
+	id: u64,
 	#[serde(deserialize_with = "de_string_to_bytes")]
 	node_id: Vec<u8>,
 	user: User,
@@ -221,9 +241,9 @@ impl fmt::Debug for GithubInfo {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(
 			f,
-			"{{ url: {}, node_id: {}, login: {}, created_at: {}, updated_at: {}, body: {} }}",
-			// "{{ url: {}, node_id: {}, login: {}, created_at: {}, updated_at: {}, body: {} }}",
+			"{{ url: {}, id: {}, node_id: {}, login: {}, created_at: {}, updated_at: {}, body: {} }}",
 			str::from_utf8(&self.url).map_err(|_| fmt::Error)?,
+			self.id,
 			str::from_utf8(&self.node_id).map_err(|_| fmt::Error)?,
 			str::from_utf8(&self.user.login).map_err(|_| fmt::Error)?,
 			str::from_utf8(&self.created_at).map_err(|_| fmt::Error)?,
@@ -233,14 +253,70 @@ impl fmt::Debug for GithubInfo {
 	}
 }
 
-// pub const HTTP_REMOTE_REQUEST: &str = "https://api.github.com/orgs/substrate-developer-hub";
-pub const HTTP_REMOTE_REQUEST: &str = "https://api.github.com/repos/realtakahashi/faucet_pallet/issues/2/comments";
-
 impl<T: Trait> Module<T> {
-	fn fetch_data() -> Result<Vec<u8>, &'static str> {
+	fn check_faucet_datas(){
+
+
+		// let g_info = match Self::fetch_data(){
+		// 	Ok(res)=>res,
+		// 	Err(e)=>{
+		// 		debug::error!("Error fetch_data: {}", e);
+		// 		return
+		// 	}
+		// };
+		// match Self::get_newest_data_from_onchain(){
+		// 	Ok(res)=>res,
+		// 	Err(e)=>{
+		// 		debug::error!("Error fetch_data: {}", e);
+		// 		return
+		// 	}
+		// };
+		// let target_g_info = match Self::check_fetch_data(g_info){
+		// 	Ok(res)=>res,
+		// 	Err(e)=>{
+		// 		debug::error!("Error check_data: {}", e);
+		// 		return
+		// 	}
+		// };
+	}
+
+	// fn check_fetch_data(g_info Vec<GithubInfo>) -> Result<Vec<GithubInfo>, &'static str>{
+		
+	// }
+
+	// fn get_newest_data_from_onchain() -> Result<&'static str, &'static str>{
+	//   let json_str: Vec<u8> = br#"{"id":1, "jsonrpc":"2.0", "method": "state_getStorage", "params": ["0x5c0d1176a568c1f92944340dbfed9e9c530ebca703c85910e7164cb7d1c9e47b"]}"#.to_vec();
+
+	//   let pending = http::Request::get(HTTP_ONCHAIN_REQUEST)
+	// 	.add_header("User-Agent", HTTP_HEADER_USER_AGENT)
+	// 	.add_header("Accept-Charset", "UTF-8")
+	// 	.add_header("Content-Type", "application/json")
+	// 	.body(json_str)
+	// 	.send()
+	// 	.map_err(|_| "Error in sending http GET request")?;
   
-	// Specifying the request
-	let pending = http::Request::get(HTTP_REMOTE_REQUEST)
+	//   // Waiting for the response
+	//   let response = pending.wait()
+	// 	.map_err(|_| "Error in waiting http response back")?;
+  
+	//   // Check if the HTTP response is okay
+	//   if response.code != 200 {
+	// 	debug::warn!("Unexpected status code: {}", response.code);
+	// 	return Err("Non-200 status code returned from http request");
+	//   }
+ 
+	//   let resp_bytes = response.body().collect::<Vec<u8>>();
+
+	//   let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
+	//   // Print out our fetched JSON string
+	//   debug::info!("$$$$ response string $$$$");
+	//   debug::info!("{}", resp_str);
+	//   Ok(resp_str)
+	// }
+
+	fn fetch_data() -> Result<Vec<GithubInfo>, &'static str> {
+	  // Specifying the request
+	  let pending = http::Request::get(HTTP_REMOTE_REQUEST)
 		.add_header("User-Agent", HTTP_HEADER_USER_AGENT)
 		.add_header("Accept-Charset", "UTF-8")
 		.send()
@@ -274,6 +350,6 @@ impl<T: Trait> Module<T> {
 	  debug::info!("$$$$ json string $$$$");
 	  debug::info!("{:#?}", gh_info);
 	  // Collect the result in the form of bytes
-	  Ok(response.body().collect::<Vec<u8>>())
+	  Ok(gh_info)
 	}
   }
