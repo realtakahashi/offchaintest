@@ -53,6 +53,7 @@ pub struct FaucetData {
     pub id: u64,
 	pub login: Vec<u8>,
     pub created_at: Vec<u8>,
+	pub address: AccountId,
 }
 
 /// Configure the pallet by specifying the parameters and types on which it depends.
@@ -122,29 +123,38 @@ decl_module! {
 		}
 
 		#[weight = 10000]
-		pub fn send_some_testnet_token(origin, faucet_data: FaucetData) -> DispatchResult {
+		pub fn send_some_testnet_token(origin, faucet_datas: Vec<FaucetData>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			// todo: check who
-			debug::info!("submit_number_signed: ({}, {:?})", faucet_data.id, who);
+			debug::info!("send_some_testnet_token:singer: {:?}", who);
 			let latest_faucet_data = match LatestFaucetData::get(){
 				Some(data) => data,
-				None => {
-					// todo: transfer token
-					debug::info!("Need to transfer token.");
-					LatestFaucetData::put(faucet_data);
-					return Ok(());
-				},
+				None => None,
 			};
-			if faucet_data.id != latest_faucet_data.id {
-				// todo: need to change error.
-				let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
-				let latest_created_at_str = str::from_utf8(&latest_faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
-				let created_at_for_param_data = NaiveDateTime::parse_from_str(param_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
-				let created_at_for_latest_data = NaiveDateTime::parse_from_str(latest_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
-				let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
-				if duration.num_seconds() >= 0 {
-					// todo: token transfer
+
+			if Some(latest_faucet_data) == None{
+				for faucet_data in faucet_datas {
+					// todo: error proccessing
+					transfer_token(faucet_data);
 					LatestFaucetData::put(faucet_data);
+				}
+			}
+			else{
+				for faucet_data in faucet_datas{
+					if faucet_data.id != latest_faucet_data.id {
+						// todo: need to change error.
+						let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+						let latest_created_at_str = str::from_utf8(&latest_faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+						let created_at_for_param_data = NaiveDateTime::parse_from_str(param_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+						let created_at_for_latest_data = NaiveDateTime::parse_from_str(latest_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+						let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
+						if duration.num_seconds() >= 0 {
+							// todo: error proccessing
+							transfer_token(faucet_data);
+							// todo: token transfer
+							LatestFaucetData::put(faucet_data);
+						}
+					}
 				}
 			}
 			Ok(())
@@ -285,7 +295,7 @@ impl fmt::Debug for GithubInfo {
 }
 
 impl<T: Trait> Module<T> {
-	fn check_faucet_datas(faucet_data:Option<FaucetData>){
+	fn check_faucet_datas(latest_faucet_data:Option<FaucetData>){
 		let last_check_time = StorageValueRef::persistent(b"offchain-test::last_check_time");
 		let now = sp_io::offchain::timestamp().unix_millis();
 		if let Some(Some(last_check_time)) = last_check_time.get::<u64>() {
@@ -298,7 +308,7 @@ impl<T: Trait> Module<T> {
 		debug::info!("######## faucet executed");
 		last_check_time.set(&now);
 
-		let g_info = match Self::fetch_data(){
+		let g_infos = match Self::fetch_data(){
 			Ok(res)=>res,
 			Err(e)=>{
 				debug::error!("Error fetch_data: {}", e);
@@ -306,19 +316,50 @@ impl<T: Trait> Module<T> {
 			}
 		};
 
-		let target_faucet_data = match Self::check_fetch_data(g_info){
-			Ok(res)=>res,
-			Err(e)=>{
-				debug::error!("Error check_data: {}", e);
-				return
-			}
-		};
+		if g_infos.len() !=0 {
+			let target_faucet_datas = match Self::check_fetch_data(g_infos,latest_faucet_data){
+				Ok(res)=>res,
+				Err(e)=>{
+					debug::error!("Error check_data: {}", e);
+					return
+				}
+			};
 
-		Self::offchain_signed_tx(target_faucet_data);
+			Self::offchain_signed_tx(target_faucet_datas);
+		}
 	}
 
-	fn check_fetch_data(g_info Vec<GithubInfo>) -> Result<FaucetData, &'static str>{
-		
+	fn check_fetch_data(g_infos: Vec<GithubInfo>, latest_faucet_data:Option<FaucetData>) -> Result<Vec<FaucetData>, &'static str>{
+		let mut result = Vec::new();
+		// check existing latest_faucet_data
+		let mut latest_created_at_str = "";
+		let mut latest_id = 0;
+		match latest_faucet_data{
+			Some(data)=> {
+				latest_created_at_str = str::from_utf8(&latest_faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+				latest_id = latest_faucet_data.id;
+			},
+			None=>{
+				latest_created_at_str = "1976/09/24 16:00:00";
+				latest_id = 0;
+			},
+		},
+		for g_info in g_infos{
+			if g_info.id != latest_id {
+				// todo: need to change error.
+				let param_created_at_str = str::from_utf8(&g_info.created_at).map_err(|_| Error::<T>::NoneValue)?;
+				let created_at_for_param_data = NaiveDateTime::parse_from_str(param_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+				let created_at_for_latest_data = NaiveDateTime::parse_from_str(latest_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+				let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
+				if duration.num_seconds() >= 0 {
+					let body_str = str::from_utf8(&g_info.body).map_err(|_| Error::<T>::NoneValue)?;
+				}
+
+		// loop g_info
+		// check timestamp
+		// check homework
+		// check address
+		// add result
 	}
 
 	fn fetch_data() -> Result<Vec<GithubInfo>, &'static str> {
@@ -360,7 +401,7 @@ impl<T: Trait> Module<T> {
 	  Ok(gh_info)
 	}
 
-	fn offchain_signed_tx(faucet_data: FaucetData) -> Result<(), Error<T>> {
+	fn offchain_signed_tx(faucet_datas: Vec<FaucetData>) -> Result<(), Error<T>> {
 		// We retrieve a signer and check if it is valid.
 		//   Since this pallet only has one key in the keystore. We use `any_account()1 to
 		//   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
@@ -373,7 +414,7 @@ impl<T: Trait> Module<T> {
 		//   - `Some((account, Err(())))`: error occured when sending the transaction
 		let result = signer.send_signed_transaction(|_acct|
 			// This is the on-chain function
-			Call::send_some_testnet_token(faucet_data)
+			Call::send_some_testnet_token(faucet_datas)
 		);
 
 		// Display error if the signed tx fails.
