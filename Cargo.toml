@@ -24,7 +24,9 @@ sp-core = { version = '2.0.0', default-features = false }
 sp-io = { version = '2.0.0', default-features = false }
 sp-runtime = { version = '2.0.0', default-features = false }
 sp-std = { version = '2.0.0', default-features = false }
-chrono = {version = '0.4.19', default-features = false}
+chrono = { version = '0.4.19', default-features = false }
+rustc-hex = { version="2.1.0", default-features = false }
+bs58 = { version = "0.4.0", default-features = false }
 
 [features]
 default = ['std']
@@ -35,4 +37,6 @@ std = [
 	'sp-io/std',
 	'sp-runtime/std',
 	'sp-std/std',
+	'rustc-hex/std',
+	'bs58/std',
 ]

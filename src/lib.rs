@@ -43,9 +43,53 @@ use sp_std::{
 };
 use alt_serde::{Deserialize, Deserializer};
 use sp_runtime::offchain::Timestamp;
-use chrono::{NaiveDateTime, Duration};
+use chrono::{DateTime, Duration};
+use rustc_hex::{FromHex, ToHex};
 
 const FAUCET_CHECK_INTERVAL: u64 = 60000;
+
+pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"demo");
+
+pub mod crypto {
+	use crate::KEY_TYPE;
+	use sp_core::sr25519::Signature as Sr25519Signature;
+	use sp_runtime::app_crypto::{app_crypto, sr25519};
+	use sp_runtime::{
+		traits::Verify,
+		MultiSignature, MultiSigner,
+	};
+
+	app_crypto!(sr25519, KEY_TYPE);
+
+	pub struct TestAuthId;
+	// implemented for ocw-runtime
+	impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for TestAuthId {
+		type RuntimeAppPublic = Public;
+		type GenericSignature = sp_core::sr25519::Signature;
+		type GenericPublic = sp_core::sr25519::Public;
+	}
+
+	// implemented for mock runtime in test
+	impl frame_system::offchain::AppCrypto<<Sr25519Signature as Verify>::Signer, Sr25519Signature>
+		for TestAuthId
+	{
+		type RuntimeAppPublic = Public;
+		type GenericSignature = sp_core::sr25519::Signature;
+		type GenericPublic = sp_core::sr25519::Public;
+	}
+}
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct Payload<Public> {
+	number: u64,
+	public: Public
+}
+
+impl <T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
+	fn public(&self) -> T::Public {
+		self.public.clone()
+	}
+}
 
 #[derive(Clone, Eq, PartialEq, Default, Encode, Decode, Hash, Debug)]
 //#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -53,13 +97,16 @@ pub struct FaucetData {
     pub id: u64,
 	pub login: Vec<u8>,
     pub created_at: Vec<u8>,
-	pub address: AccountId,
+	pub address: Vec<u8>,
 }
 
 /// Configure the pallet by specifying the parameters and types on which it depends.
-pub trait Trait: frame_system::Trait {
+//pub trait Trait: frame_system::Trait {
+pub trait Trait: system::Trait + CreateSignedTransaction<Call<Self>> {
+	type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
 	/// Because this pallet emits events, it depends on the runtime's definition of an event.
 	type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
+	type Call: From<Call<Self>>;
 }
 
 // The pallet's runtime storage items.
@@ -127,33 +174,33 @@ decl_module! {
 			let who = ensure_signed(origin)?;
 			// todo: check who
 			debug::info!("send_some_testnet_token:singer: {:?}", who);
-			let latest_faucet_data = match LatestFaucetData::get(){
-				Some(data) => data,
-				None => None,
+			let mut latest_created_at_str = "";
+			let mut latest_id = 0;
+			let mut tmp = Vec::new();
+			match LatestFaucetData::get(){
+				Some(data) => {
+					tmp = data.created_at.clone();
+					latest_created_at_str = str::from_utf8(&tmp).map_err(|_| Error::<T>::NoneValue)?;
+					latest_id = data.id;
+				},
+				None => {
+					latest_created_at_str = "1976-09-24T16:00:00Z";
+					latest_id = 0;	
+				},
 			};
 
-			if Some(latest_faucet_data) == None{
-				for faucet_data in faucet_datas {
-					// todo: error proccessing
-					transfer_token(faucet_data);
-					LatestFaucetData::put(faucet_data);
-				}
-			}
-			else{
-				for faucet_data in faucet_datas{
-					if faucet_data.id != latest_faucet_data.id {
-						// todo: need to change error.
-						let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
-						let latest_created_at_str = str::from_utf8(&latest_faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
-						let created_at_for_param_data = NaiveDateTime::parse_from_str(param_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
-						let created_at_for_latest_data = NaiveDateTime::parse_from_str(latest_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
-						let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
-						if duration.num_seconds() >= 0 {
-							// todo: error proccessing
-							transfer_token(faucet_data);
-							// todo: token transfer
-							LatestFaucetData::put(faucet_data);
-						}
+			for faucet_data in faucet_datas{
+				if faucet_data.id != latest_id {
+					// todo: need to change error.
+					let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+					let created_at_for_param_data = DateTime::parse_from_rfc3339(param_created_at_str).unwrap();
+					let created_at_for_latest_data = DateTime::parse_from_rfc3339(latest_created_at_str).unwrap();
+					let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
+					if duration.num_seconds() >= 0 {
+						// todo: error proccessing
+						//transfer_token(faucet_data);
+						// todo: token transfer
+						LatestFaucetData::put(faucet_data);
 					}
 				}
 			}
@@ -316,7 +363,7 @@ impl<T: Trait> Module<T> {
 			}
 		};
 
-		if g_infos.len() !=0 {
+		if g_infos.len() > 0 {
 			let target_faucet_datas = match Self::check_fetch_data(g_infos,latest_faucet_data){
 				Ok(res)=>res,
 				Err(e)=>{
@@ -324,42 +371,89 @@ impl<T: Trait> Module<T> {
 					return
 				}
 			};
-
-			Self::offchain_signed_tx(target_faucet_datas);
+			if target_faucet_datas.len() > 0 {
+				Self::offchain_signed_tx(target_faucet_datas);
+			}
 		}
 	}
 
 	fn check_fetch_data(g_infos: Vec<GithubInfo>, latest_faucet_data:Option<FaucetData>) -> Result<Vec<FaucetData>, &'static str>{
-		let mut result = Vec::new();
-		// check existing latest_faucet_data
+		let mut results = Vec::new();
 		let mut latest_created_at_str = "";
 		let mut latest_id = 0;
+		let mut tmp = Vec::new();
 		match latest_faucet_data{
 			Some(data)=> {
-				latest_created_at_str = str::from_utf8(&latest_faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
-				latest_id = latest_faucet_data.id;
+				tmp = data.created_at;
+				latest_created_at_str = str::from_utf8(&tmp).map_err(|_| Error::<T>::NoneValue)?;
+				latest_id = data.id;
 			},
 			None=>{
-				latest_created_at_str = "1976/09/24 16:00:00";
+				latest_created_at_str = "1976-09-24T16:00:00Z";
 				latest_id = 0;
 			},
-		},
+		};
 		for g_info in g_infos{
 			if g_info.id != latest_id {
 				// todo: need to change error.
 				let param_created_at_str = str::from_utf8(&g_info.created_at).map_err(|_| Error::<T>::NoneValue)?;
-				let created_at_for_param_data = NaiveDateTime::parse_from_str(param_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
-				let created_at_for_latest_data = NaiveDateTime::parse_from_str(latest_created_at_str, "%Y/%m/%d %H:%M:%S").unwrap();
+				debug::info!("$$$$$$$$$$$$$ param_created_at_str: {}",param_created_at_str);
+				let created_at_for_param_data = DateTime::parse_from_rfc3339(param_created_at_str).unwrap();
+				let created_at_for_latest_data = DateTime::parse_from_rfc3339(latest_created_at_str).unwrap();
 				let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
 				if duration.num_seconds() >= 0 {
 					let body_str = str::from_utf8(&g_info.body).map_err(|_| Error::<T>::NoneValue)?;
+					let body_value: Vec<&str> = body_str.split("<br>").collect();
+					let mut address_str = "";
+					let mut homework_str = "";
+					for key_value_str in body_value{
+						let key_value: Vec<&str> = key_value_str.split(':').collect();
+						if key_value.len() != 2{
+							debug::warn!("This is not key_value string: {:#?}", key_value);
+							continue;
+						}
+						if key_value_str.find("address") >= Some(0){
+							address_str = key_value[1];
+						}
+						if key_value_str.find("homework") >= Some(0){
+							homework_str = key_value[1];
+						}
+					}
+					let mut output = vec![0xFF; 35];
+					bs58::decode(address_str).into(&mut output);
+					let cut_address_vec:Vec<_> = output.drain(1..33).collect();
+					let homework_vec:Vec<_> = homework_str.from_hex().unwrap();
+					if cut_address_vec != homework_vec {
+						debug::warn!("This is invalid homework: {:#?}", homework_str);
+						continue;
+					}
+					// if address_str.find("0x") >= Some(0) {
+					// 	debug::warn!("This is not substrate format: {:#?}", address_str);
+					// 	continue;
+					// }
+					// if address_str.len() != 48 {
+					// 	debug::warn!("This is invalid address: {:#?}", address_str);
+					// 	continue;
+					// }
+					// if homework_str.find("0x") >= Some(0) {
+					// 	debug::warn!("This is invalid homework: {:#?}", homework_str);
+					// 	continue;
+					// }
+					// if homework_str.len() != 70 {
+					// 	debug::warn!("This is invalid address: {:#?}", homework_str);
+					// 	continue;
+					// }
+					let result = FaucetData{
+						id: g_info.id,
+						login: g_info.user.login,
+						created_at: g_info.created_at,
+						address: homework_str.from_hex().unwrap(),
+					};
+					results.push(result);
 				}
-
-		// loop g_info
-		// check timestamp
-		// check homework
-		// check address
-		// add result
+			}
+		}
+		Ok(results)
 	}
 
 	fn fetch_data() -> Result<Vec<GithubInfo>, &'static str> {
@@ -414,7 +508,7 @@ impl<T: Trait> Module<T> {
 		//   - `Some((account, Err(())))`: error occured when sending the transaction
 		let result = signer.send_signed_transaction(|_acct|
 			// This is the on-chain function
-			Call::send_some_testnet_token(faucet_datas)
+			Call::send_some_testnet_token(faucet_datas.clone())
 		);
 
 		// Display error if the signed tx fails.
