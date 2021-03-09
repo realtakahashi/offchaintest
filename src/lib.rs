@@ -10,45 +10,43 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-use core::{convert::TryInto, fmt};
+use core::fmt;
 use frame_support::{
-	debug, decl_error, decl_event, decl_module, decl_storage, dispatch::DispatchResult,dispatch,
+	debug, decl_error, decl_event, decl_module, decl_storage, dispatch::DispatchResult,
+	traits::{ Currency, ExistenceRequirement },
 };
 use parity_scale_codec::{Decode, Encode};
 
 use frame_system::{
-	self as system, ensure_none, ensure_signed,
+	self as system, ensure_signed,
 	offchain::{
-		AppCrypto, CreateSignedTransaction, SendSignedTransaction, SendUnsignedTransaction,
-		SignedPayload, SigningTypes, Signer, SubmitTransaction,
+		AppCrypto, CreateSignedTransaction, SendSignedTransaction,
+		SignedPayload, SigningTypes, Signer,
 	},
 };
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::{
+	AccountId32,
 	RuntimeDebug,
-	offchain as rt_offchain,
 	offchain::{
 		http,
 		storage::StorageValueRef,
-		storage_lock::{StorageLock, BlockAndTime},
-	},
-	transaction_validity::{
-		InvalidTransaction, TransactionSource, TransactionValidity,
-		ValidTransaction,
 	},
 };
 use sp_std::{
 	prelude::*, str,
-	collections::vec_deque::VecDeque,
 };
 use alt_serde::{Deserialize, Deserializer};
-use sp_runtime::offchain::Timestamp;
 use chrono::{DateTime, Duration};
-use rustc_hex::{FromHex, ToHex};
+use rustc_hex::FromHex;
+use sp_runtime::SaturatedConversion;
+// use hex_literal::hex;
 
 const FAUCET_CHECK_INTERVAL: u64 = 60000;
-
+// pub const TOKEN_AMOUNT: u64 = 100000000000000000; 
+pub const TOKEN_AMOUNT: u64 = 100000000000000; 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"demo");
+// pub const SINGER_LIST: [[u8; 32]; 1] = [hex!["e0da52ca94d4c69679c6438f5dc4cf47c6032ab84eade0767714e3981fe02514"]];
 
 pub mod crypto {
 	use crate::KEY_TYPE;
@@ -100,6 +98,8 @@ pub struct FaucetData {
 	pub address: Vec<u8>,
 }
 
+type Balance<T> = <<T as Trait>::Currency as Currency<<T as system::Trait>::AccountId>>::Balance;
+
 /// Configure the pallet by specifying the parameters and types on which it depends.
 //pub trait Trait: frame_system::Trait {
 pub trait Trait: system::Trait + CreateSignedTransaction<Call<Self>> {
@@ -107,6 +107,7 @@ pub trait Trait: system::Trait + CreateSignedTransaction<Call<Self>> {
 	/// Because this pallet emits events, it depends on the runtime's definition of an event.
 	type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
 	type Call: From<Call<Self>>;
+	type Currency: Currency<Self::AccountId>;
 }
 
 // The pallet's runtime storage items.
@@ -136,14 +137,14 @@ decl_event!(
 // Errors inform users that something went wrong.
 decl_error! {
 	pub enum Error for Module<T: Trait> {
-		/// Error names should be descriptive.
-		NoneValue,
-		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+		// /// Errors should have helpful documentation associated with them.
+		// StorageOverflow,
 		// Error returned when fetching github info
+		NoneValue,
 		HttpFetchingError,
 		OffchainSignedTxError, // todo : need to change
 		NoLocalAcctForSigning, // todo : need to change
+		SingerIsInvalidate,
 
 	}
 }
@@ -161,10 +162,15 @@ decl_module! {
 
 		fn offchain_worker(block: T::BlockNumber) {
 			let value = match LatestFaucetData::get() {
-				None => None,
-				Some(old) => Some(old),
+				None => {
+					debug::info!("##### value is None");
+					None
+				},
+				Some(old) => {
+					debug::info!("##### id:{:#?} ", old.id);
+					Some(old)
+				},
 			};
-			debug::info!("value is {:#?}",value);
 			
 			Self::check_faucet_datas(value);
 		}
@@ -172,11 +178,25 @@ decl_module! {
 		#[weight = 10000]
 		pub fn send_some_testnet_token(origin, faucet_datas: Vec<FaucetData>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			// todo: check who
-			debug::info!("send_some_testnet_token:singer: {:?}", who);
-			let mut latest_created_at_str = "";
-			let mut latest_id = 0;
-			let mut tmp = Vec::new();
+			// check signer
+			debug::info!("##### send_some_testnet_token:singer: {:?}", who);
+			// let mut find_in_signer_list = false;
+			// for signer in SINGER_LIST.iter(){
+			// 	let tmp: [u8;32] = signer.clone();
+			// 	let account32: AccountId32 = tmp.into();
+			// 	let mut to32 = AccountId32::as_ref(&account32);
+			// 	let to_address : T::AccountId = T::AccountId::decode(&mut to32).unwrap_or_default();
+			// 	if who == to_address{
+			// 		find_in_signer_list = true;
+			// 	}
+			// }
+			// if find_in_signer_list == false{
+			// 	return Err(Error::<T>::SingerIsInvalidate)?;
+			// }
+
+			let latest_created_at_str;
+			let latest_id;
+			let tmp;
 			match LatestFaucetData::get(){
 				Some(data) => {
 					tmp = data.created_at.clone();
@@ -198,8 +218,22 @@ decl_module! {
 					let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
 					if duration.num_seconds() >= 0 {
 						// todo: error proccessing
-						//transfer_token(faucet_data);
-						// todo: token transfer
+						let mut array = [0; 32];
+						let bytes = &faucet_data.address[..array.len()]; // panics if not enough data
+						array.copy_from_slice(bytes); 
+						let account32: AccountId32 = array.into();
+						let mut to32 = AccountId32::as_ref(&account32);
+						let to_address : T::AccountId = T::AccountId::decode(&mut to32).unwrap_or_default();
+						let token_amoount : Balance<T> = TOKEN_AMOUNT.saturated_into();
+						debug::info!("##### from:{:#?}, to:{:#?}, amount:{:#?}",who,to_address,token_amoount);
+						// if T::Currency::transfer(&who, &to_address, token_amoount, ExistenceRequirement::KeepAlive) != Ok(()){
+						// 	debug::error!("##### transfer token is failed.");
+						// }						
+						match T::Currency::transfer(&who, &to_address, token_amoount, ExistenceRequirement::KeepAlive){
+							Ok(())=> debug::info!("##### transfer token is succeed."),
+							Err(e)=> debug::error!("##### transfer token is failed. : {:#?} " , e),
+						};
+						debug::info!("##### update LatestFaucetData.");
 						LatestFaucetData::put(faucet_data);
 					}
 				}
@@ -207,42 +241,42 @@ decl_module! {
 			Ok(())
 		}
 
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		#[weight = 10_000]
-		pub fn do_something(origin, something: u32) -> dispatch::DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// This function will return an error if the extrinsic is not signed.
-			// https://substrate.dev/docs/en/knowledgebase/runtime/origin
-			let who = ensure_signed(origin)?;
+		// /// An example dispatchable that takes a singles value as a parameter, writes the value to
+		// /// storage and emits an event. This function must be dispatched by a signed extrinsic.
+		// #[weight = 10_000]
+		// pub fn do_something(origin, something: u32) -> dispatch::DispatchResult {
+		// 	// Check that the extrinsic was signed and get the signer.
+		// 	// This function will return an error if the extrinsic is not signed.
+		// 	// https://substrate.dev/docs/en/knowledgebase/runtime/origin
+		// 	let who = ensure_signed(origin)?;
 
-			// Update storage.
-			Something::put(something);
+		// 	// Update storage.
+		// 	Something::put(something);
 
-			// Emit an event.
-			Self::deposit_event(RawEvent::SomethingStored(something, who));
-			// Return a successful DispatchResult
-			Ok(())
-		}
+		// 	// Emit an event.
+		// 	Self::deposit_event(RawEvent::SomethingStored(something, who));
+		// 	// Return a successful DispatchResult
+		// 	Ok(())
+		// }
 
-		/// An example dispatchable that may throw a custom error.
-		#[weight = 10_000]
-		pub fn cause_error(origin) -> dispatch::DispatchResult {
-			let _who = ensure_signed(origin)?;
+		// /// An example dispatchable that may throw a custom error.
+		// #[weight = 10_000]
+		// pub fn cause_error(origin) -> dispatch::DispatchResult {
+		// 	let _who = ensure_signed(origin)?;
 
-			// Read a value from storage.
-			match Something::get() {
-				// Return an error if the value has not been set.
-				None => Err(Error::<T>::NoneValue)?,
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					Something::put(new);
-					Ok(())
-				},
-			}
-		}
+		// 	// Read a value from storage.
+		// 	match Something::get() {
+		// 		// Return an error if the value has not been set.
+		// 		None => Err(Error::<T>::NoneValue)?,
+		// 		Some(old) => {
+		// 			// Increment the value read from storage; will error in the event of overflow.
+		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
+		// 			// Update the value in storage with the incremented result.
+		// 			Something::put(new);
+		// 			Ok(())
+		// 		},
+		// 	}
+		// }
 	}
 }
 
@@ -346,19 +380,19 @@ impl<T: Trait> Module<T> {
 		let last_check_time = StorageValueRef::persistent(b"offchain-test::last_check_time");
 		let now = sp_io::offchain::timestamp().unix_millis();
 		if let Some(Some(last_check_time)) = last_check_time.get::<u64>() {
-			debug::info!("last_check_time: {:?}", last_check_time);
+			debug::info!("##### last_check_time: {:?}", last_check_time);
 			if now - last_check_time < FAUCET_CHECK_INTERVAL{
 				return;
 			}
 		}		
 
-		debug::info!("######## faucet executed");
+		debug::info!("##### faucet executed");
 		last_check_time.set(&now);
 
 		let g_infos = match Self::fetch_data(){
 			Ok(res)=>res,
 			Err(e)=>{
-				debug::error!("Error fetch_data: {}", e);
+				debug::error!("##### Error fetch_data: {}", e);
 				return
 			}
 		};
@@ -367,21 +401,25 @@ impl<T: Trait> Module<T> {
 			let target_faucet_datas = match Self::check_fetch_data(g_infos,latest_faucet_data){
 				Ok(res)=>res,
 				Err(e)=>{
-					debug::error!("Error check_data: {}", e);
+					debug::error!("##### Error check_data: {}", e);
 					return
 				}
 			};
 			if target_faucet_datas.len() > 0 {
-				Self::offchain_signed_tx(target_faucet_datas);
+				debug::info!("##### transaction will be executed.");
+				match Self::offchain_signed_tx(target_faucet_datas) {
+					Ok(res)=> res,
+					Err(e)=> debug::error!("##### offchain_signed_tx is failed.: {:#?}", e),
+				}
 			}
 		}
 	}
 
 	fn check_fetch_data(g_infos: Vec<GithubInfo>, latest_faucet_data:Option<FaucetData>) -> Result<Vec<FaucetData>, &'static str>{
 		let mut results = Vec::new();
-		let mut latest_created_at_str = "";
-		let mut latest_id = 0;
-		let mut tmp = Vec::new();
+		let latest_created_at_str;
+		let latest_id;
+		let tmp;
 		match latest_faucet_data{
 			Some(data)=> {
 				tmp = data.created_at;
@@ -397,7 +435,6 @@ impl<T: Trait> Module<T> {
 			if g_info.id != latest_id {
 				// todo: need to change error.
 				let param_created_at_str = str::from_utf8(&g_info.created_at).map_err(|_| Error::<T>::NoneValue)?;
-				debug::info!("$$$$$$$$$$$$$ param_created_at_str: {}",param_created_at_str);
 				let created_at_for_param_data = DateTime::parse_from_rfc3339(param_created_at_str).unwrap();
 				let created_at_for_latest_data = DateTime::parse_from_rfc3339(latest_created_at_str).unwrap();
 				let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
@@ -409,7 +446,7 @@ impl<T: Trait> Module<T> {
 					for key_value_str in body_value{
 						let key_value: Vec<&str> = key_value_str.split(':').collect();
 						if key_value.len() != 2{
-							debug::warn!("This is not key_value string: {:#?}", key_value);
+							debug::warn!("##### This is not key_value string: {:#?}", key_value);
 							continue;
 						}
 						if key_value_str.find("address") >= Some(0){
@@ -420,29 +457,16 @@ impl<T: Trait> Module<T> {
 						}
 					}
 					let mut output = vec![0xFF; 35];
-					bs58::decode(address_str).into(&mut output);
+					match bs58::decode(address_str).into(&mut output){
+						Ok(_res)=> debug::warn!("##### bs58.decode is succeed."),
+						Err(e)=> debug::warn!("##### This is invalid address : {:#?} : {:#?}", address_str, e),
+					};
 					let cut_address_vec:Vec<_> = output.drain(1..33).collect();
 					let homework_vec:Vec<_> = homework_str.from_hex().unwrap();
 					if cut_address_vec != homework_vec {
-						debug::warn!("This is invalid homework: {:#?}", homework_str);
+						debug::warn!("##### This is invalid address or invalid homework: {:#?}", homework_str);
 						continue;
 					}
-					// if address_str.find("0x") >= Some(0) {
-					// 	debug::warn!("This is not substrate format: {:#?}", address_str);
-					// 	continue;
-					// }
-					// if address_str.len() != 48 {
-					// 	debug::warn!("This is invalid address: {:#?}", address_str);
-					// 	continue;
-					// }
-					// if homework_str.find("0x") >= Some(0) {
-					// 	debug::warn!("This is invalid homework: {:#?}", homework_str);
-					// 	continue;
-					// }
-					// if homework_str.len() != 70 {
-					// 	debug::warn!("This is invalid address: {:#?}", homework_str);
-					// 	continue;
-					// }
 					let result = FaucetData{
 						id: g_info.id,
 						login: g_info.user.login,
@@ -457,71 +481,44 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn fetch_data() -> Result<Vec<GithubInfo>, &'static str> {
-	  // Specifying the request
-	  let pending = http::Request::get(HTTP_REMOTE_REQUEST)
+		let pending = http::Request::get(HTTP_REMOTE_REQUEST)
 		.add_header("User-Agent", HTTP_HEADER_USER_AGENT)
 		.add_header("Accept-Charset", "UTF-8")
 		.send()
 		.map_err(|_| "Error in sending http GET request")?;
-  
-	  // Waiting for the response
-	  let response = pending.wait()
+		let response = pending.wait()
 		.map_err(|_| "Error in waiting http response back")?;
-  
-	  // Check if the HTTP response is okay
-	  if response.code != 200 {
+
+		if response.code != 200 {
 		debug::warn!("Unexpected status code: {}", response.code);
 		return Err("Non-200 status code returned from http request");
-	  }
- 
-	  let resp_bytes = response.body().collect::<Vec<u8>>();
-
-	  let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
-	  // Print out our fetched JSON string
-	  debug::info!("$$$$ response string $$$$");
-	  debug::info!("{}", resp_str);
-
-	  let resp_str2 = resp_str.replace(r"\r\n","<br>");
-	  debug::info!("$$$$ response string22222 $$$$");
-	  debug::info!("{}", resp_str2);
-
-	  // Deserializing JSON to struct, thanks to `serde` and `serde_derive`
-	  let gh_info: Vec<GithubInfo> =
-		  serde_json::from_str(&resp_str2).map_err(|_| <Error<T>>::HttpFetchingError)?;
-
-	  debug::info!("$$$$ json string $$$$");
-	  debug::info!("{:#?}", gh_info);
-	  // Collect the result in the form of bytes
-	  Ok(gh_info)
+		} 
+		let resp_bytes = response.body().collect::<Vec<u8>>();
+		let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
+	//   debug::info!("$$$$ response string $$$$");
+	//   debug::info!("{}", resp_str);
+		let resp_str2 = resp_str.replace(r"\r\n","<br>");
+	//   debug::info!("$$$$ response string22222 $$$$");
+	//   debug::info!("{}", resp_str2);
+		let gh_info: Vec<GithubInfo> =
+			serde_json::from_str(&resp_str2).map_err(|_| <Error<T>>::HttpFetchingError)?;
+	//   debug::info!("$$$$ json string $$$$");
+	//   debug::info!("{:#?}", gh_info);
+		Ok(gh_info)
 	}
 
 	fn offchain_signed_tx(faucet_datas: Vec<FaucetData>) -> Result<(), Error<T>> {
-		// We retrieve a signer and check if it is valid.
-		//   Since this pallet only has one key in the keystore. We use `any_account()1 to
-		//   retrieve it. If there are multiple keys and we want to pinpoint it, `with_filter()` can be chained,
-		//   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.Signer.html
 		let signer = Signer::<T, T::AuthorityId>::any_account();
-
-		// `result` is in the type of `Option<(Account<T>, Result<(), ()>)>`. It is:
-		//   - `None`: no account is available for sending transaction
-		//   - `Some((account, Ok(())))`: transaction is successfully sent
-		//   - `Some((account, Err(())))`: error occured when sending the transaction
 		let result = signer.send_signed_transaction(|_acct|
-			// This is the on-chain function
 			Call::send_some_testnet_token(faucet_datas.clone())
 		);
-
-		// Display error if the signed tx fails.
 		if let Some((acc, res)) = result {
 			if res.is_err() {
 				debug::error!("failure: offchain_signed_tx: tx sent: {:?}", acc.id);
 				return Err(<Error<T>>::OffchainSignedTxError);
 			}
-			// Transaction is sent successfully
 			return Ok(());
 		}
-
-		// The case of `None`: no account is available for sending
 		debug::error!("No local account available");
 		Err(<Error<T>>::NoLocalAcctForSigning)
 	}
