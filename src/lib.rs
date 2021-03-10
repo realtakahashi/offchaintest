@@ -46,6 +46,7 @@ const FAUCET_CHECK_INTERVAL: u64 = 60000;
 // pub const TOKEN_AMOUNT: u64 = 100000000000000000; 
 pub const TOKEN_AMOUNT: u64 = 100000000000000; 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"demo");
+pub const WAIT_BLOCK_NUMBER: u32 = 20; //2000
 // pub const SINGER_LIST: [[u8; 32]; 1] = [hex!["e0da52ca94d4c69679c6438f5dc4cf47c6032ab84eade0767714e3981fe02514"]];
 
 pub mod crypto {
@@ -119,8 +120,9 @@ decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
 		// Learn more about declaring storage items:
 		// https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-		Something get(fn something): Option<u32>;
+		// Something get(fn something): Option<u32>;
 		LatestFaucetData get(fn latest_faucet_data): Option<FaucetData>;
+		Sendlist: map hasher(blake2_128_concat) T::AccountId => Option<<T as frame_system::Trait>::BlockNumber>;
 	}
 }
 
@@ -128,24 +130,18 @@ decl_storage! {
 // https://substrate.dev/docs/en/knowledgebase/runtime/events
 decl_event!(
 	pub enum Event<T> where AccountId = <T as frame_system::Trait>::AccountId {
-		/// Event documentation should end with an array that provides descriptive names for event
-		/// parameters. [something, who]
-		SomethingStored(u32, AccountId),
+		TestNetTokenTransfered(AccountId),
 	}
 );
 
 // Errors inform users that something went wrong.
 decl_error! {
 	pub enum Error for Module<T: Trait> {
-		// /// Errors should have helpful documentation associated with them.
-		// StorageOverflow,
-		// Error returned when fetching github info
-		NoneValue,
 		HttpFetchingError,
-		OffchainSignedTxError, // todo : need to change
-		NoLocalAcctForSigning, // todo : need to change
-		SingerIsInvalidate,
-
+		OffchainSignedTxError, 
+		NoLocalAcctForSigning, 
+		TimeHasNotPassed,
+		StrConvertError,
 	}
 }
 
@@ -178,21 +174,7 @@ decl_module! {
 		#[weight = 10000]
 		pub fn send_some_testnet_token(origin, faucet_datas: Vec<FaucetData>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			// check signer
 			debug::info!("##### send_some_testnet_token:singer: {:?}", who);
-			// let mut find_in_signer_list = false;
-			// for signer in SINGER_LIST.iter(){
-			// 	let tmp: [u8;32] = signer.clone();
-			// 	let account32: AccountId32 = tmp.into();
-			// 	let mut to32 = AccountId32::as_ref(&account32);
-			// 	let to_address : T::AccountId = T::AccountId::decode(&mut to32).unwrap_or_default();
-			// 	if who == to_address{
-			// 		find_in_signer_list = true;
-			// 	}
-			// }
-			// if find_in_signer_list == false{
-			// 	return Err(Error::<T>::SingerIsInvalidate)?;
-			// }
 
 			let latest_created_at_str;
 			let latest_id;
@@ -200,7 +182,7 @@ decl_module! {
 			match LatestFaucetData::get(){
 				Some(data) => {
 					tmp = data.created_at.clone();
-					latest_created_at_str = str::from_utf8(&tmp).map_err(|_| Error::<T>::NoneValue)?;
+					latest_created_at_str = str::from_utf8(&tmp).map_err(|_| Error::<T>::StrConvertError)?;
 					latest_id = data.id;
 				},
 				None => {
@@ -212,7 +194,7 @@ decl_module! {
 			for faucet_data in faucet_datas{
 				if faucet_data.id != latest_id {
 					// todo: need to change error.
-					let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::NoneValue)?;
+					let param_created_at_str = str::from_utf8(&faucet_data.created_at).map_err(|_| Error::<T>::StrConvertError)?;
 					let created_at_for_param_data = DateTime::parse_from_rfc3339(param_created_at_str).unwrap();
 					let created_at_for_latest_data = DateTime::parse_from_rfc3339(latest_created_at_str).unwrap();
 					let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
@@ -231,52 +213,18 @@ decl_module! {
 						// }						
 						match T::Currency::transfer(&who, &to_address, token_amoount, ExistenceRequirement::KeepAlive){
 							Ok(())=> debug::info!("##### transfer token is succeed."),
+							// todo: error implementation.
 							Err(e)=> debug::error!("##### transfer token is failed. : {:#?} " , e),
 						};
 						debug::info!("##### update LatestFaucetData.");
 						LatestFaucetData::put(faucet_data);
+						<Sendlist<T>>::insert(to_address.clone(), <frame_system::Module<T>>::block_number());
+						Self::deposit_event(RawEvent::TestNetTokenTransfered(to_address.clone()));
 					}
 				}
 			}
 			Ok(())
 		}
-
-		// /// An example dispatchable that takes a singles value as a parameter, writes the value to
-		// /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		// #[weight = 10_000]
-		// pub fn do_something(origin, something: u32) -> dispatch::DispatchResult {
-		// 	// Check that the extrinsic was signed and get the signer.
-		// 	// This function will return an error if the extrinsic is not signed.
-		// 	// https://substrate.dev/docs/en/knowledgebase/runtime/origin
-		// 	let who = ensure_signed(origin)?;
-
-		// 	// Update storage.
-		// 	Something::put(something);
-
-		// 	// Emit an event.
-		// 	Self::deposit_event(RawEvent::SomethingStored(something, who));
-		// 	// Return a successful DispatchResult
-		// 	Ok(())
-		// }
-
-		// /// An example dispatchable that may throw a custom error.
-		// #[weight = 10_000]
-		// pub fn cause_error(origin) -> dispatch::DispatchResult {
-		// 	let _who = ensure_signed(origin)?;
-
-		// 	// Read a value from storage.
-		// 	match Something::get() {
-		// 		// Return an error if the value has not been set.
-		// 		None => Err(Error::<T>::NoneValue)?,
-		// 		Some(old) => {
-		// 			// Increment the value read from storage; will error in the event of overflow.
-		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-		// 			// Update the value in storage with the incremented result.
-		// 			Something::put(new);
-		// 			Ok(())
-		// 		},
-		// 	}
-		// }
 	}
 }
 
@@ -340,15 +288,6 @@ struct GithubInfo {
 	body: Vec<u8>,
 }
 
-// struct GithubInfo {
-// 	// Specify our own deserializing function to convert JSON string to vector of bytes
-// 	#[serde(deserialize_with = "de_string_to_bytes")]
-// 	login: Vec<u8>,
-// 	#[serde(deserialize_with = "de_string_to_bytes")]
-// 	blog: Vec<u8>,
-// 	public_repos: u32,
-// }
-
 pub fn de_string_to_bytes<'de, D>(de: D) -> Result<Vec<u8>, D::Error>
 where
 	D: Deserializer<'de>,
@@ -358,8 +297,6 @@ where
 }
 
 impl fmt::Debug for GithubInfo {
-	// `fmt` converts the vector of bytes inside the struct back to string for
-	//   more friendly display.
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(
 			f,
@@ -385,10 +322,8 @@ impl<T: Trait> Module<T> {
 				return;
 			}
 		}		
-
 		debug::info!("##### faucet executed");
 		last_check_time.set(&now);
-
 		let g_infos = match Self::fetch_data(){
 			Ok(res)=>res,
 			Err(e)=>{
@@ -396,7 +331,6 @@ impl<T: Trait> Module<T> {
 				return
 			}
 		};
-
 		if g_infos.len() > 0 {
 			let target_faucet_datas = match Self::check_fetch_data(g_infos,latest_faucet_data){
 				Ok(res)=>res,
@@ -416,6 +350,7 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn check_fetch_data(g_infos: Vec<GithubInfo>, latest_faucet_data:Option<FaucetData>) -> Result<Vec<FaucetData>, &'static str>{
+		// check transfer token history.
 		let mut results = Vec::new();
 		let latest_created_at_str;
 		let latest_id;
@@ -423,7 +358,7 @@ impl<T: Trait> Module<T> {
 		match latest_faucet_data{
 			Some(data)=> {
 				tmp = data.created_at;
-				latest_created_at_str = str::from_utf8(&tmp).map_err(|_| Error::<T>::NoneValue)?;
+				latest_created_at_str = str::from_utf8(&tmp).map_err(|_| Error::<T>::StrConvertError)?;
 				latest_id = data.id;
 			},
 			None=>{
@@ -434,12 +369,12 @@ impl<T: Trait> Module<T> {
 		for g_info in g_infos{
 			if g_info.id != latest_id {
 				// todo: need to change error.
-				let param_created_at_str = str::from_utf8(&g_info.created_at).map_err(|_| Error::<T>::NoneValue)?;
+				let param_created_at_str = str::from_utf8(&g_info.created_at).map_err(|_| Error::<T>::StrConvertError)?;
 				let created_at_for_param_data = DateTime::parse_from_rfc3339(param_created_at_str).unwrap();
 				let created_at_for_latest_data = DateTime::parse_from_rfc3339(latest_created_at_str).unwrap();
 				let duration: Duration = created_at_for_param_data - created_at_for_latest_data;
 				if duration.num_seconds() >= 0 {
-					let body_str = str::from_utf8(&g_info.body).map_err(|_| Error::<T>::NoneValue)?;
+					let body_str = str::from_utf8(&g_info.body).map_err(|_| Error::<T>::StrConvertError)?;
 					let body_value: Vec<&str> = body_str.split("<br>").collect();
 					let mut address_str = "";
 					let mut homework_str = "";
@@ -467,11 +402,30 @@ impl<T: Trait> Module<T> {
 						debug::warn!("##### This is invalid address or invalid homework: {:#?}", homework_str);
 						continue;
 					}
+					let to_address_vec:Vec<u8> = homework_str.from_hex().unwrap();
+					let mut array = [0; 32];
+					let bytes = &to_address_vec[..array.len()]; 
+					array.copy_from_slice(bytes); 
+					let account32: AccountId32 = array.into();
+					let mut to32 = AccountId32::as_ref(&account32);
+					let to_address : T::AccountId = T::AccountId::decode(&mut to32).unwrap_or_default();
+					match <Sendlist<T>>::get(to_address.clone()) {
+						Some(result) => {
+							let block_number = result + WAIT_BLOCK_NUMBER.into();
+							if block_number > <frame_system::Module<T>>::block_number() {
+								return Err(Error::<T>::TimeHasNotPassed)?;
+							}
+							else{
+								<Sendlist<T>>::remove(to_address.clone());
+							}
+						},
+						None => (),
+					};
 					let result = FaucetData{
 						id: g_info.id,
 						login: g_info.user.login,
 						created_at: g_info.created_at,
-						address: homework_str.from_hex().unwrap(),
+						address: to_address_vec.clone(),
 					};
 					results.push(result);
 				}
@@ -495,15 +449,9 @@ impl<T: Trait> Module<T> {
 		} 
 		let resp_bytes = response.body().collect::<Vec<u8>>();
 		let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
-	//   debug::info!("$$$$ response string $$$$");
-	//   debug::info!("{}", resp_str);
 		let resp_str2 = resp_str.replace(r"\r\n","<br>");
-	//   debug::info!("$$$$ response string22222 $$$$");
-	//   debug::info!("{}", resp_str2);
 		let gh_info: Vec<GithubInfo> =
 			serde_json::from_str(&resp_str2).map_err(|_| <Error<T>>::HttpFetchingError)?;
-	//   debug::info!("$$$$ json string $$$$");
-	//   debug::info!("{:#?}", gh_info);
 		Ok(gh_info)
 	}
 
@@ -521,5 +469,15 @@ impl<T: Trait> Module<T> {
 		}
 		debug::error!("No local account available");
 		Err(<Error<T>>::NoLocalAcctForSigning)
+	}
+
+	fn convert_vec_to_accountid(account_vec: Vec<u8>)-> T::AccountId{
+		let mut array = [0; 32];
+		let bytes = &account_vec[..array.len()]; 
+		array.copy_from_slice(bytes); 
+		let account32: AccountId32 = array.into();
+		let mut to32 = AccountId32::as_ref(&account32);
+		let to_address : T::AccountId = T::AccountId::decode(&mut to32).unwrap_or_default();
+		to_address
 	}
 }
